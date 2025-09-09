@@ -6,6 +6,9 @@
 #include <cmath>
 #include <cstdint>
 #include <immintrin.h>
+#include <cassert>
+#include <iostream>
+#include <string>
 
 // CPU Scalar Mandelbrot set generation.
 // Based on the "optimized escape time algorithm" in
@@ -16,6 +19,12 @@ void mandelbrot_cpu_scalar(uint32_t img_size, uint32_t max_iters, uint32_t *out)
             // Get the plane coordinate X for the image pixel.
             float cx = (float(j) / float(img_size)) * 2.5f - 2.0f;
             float cy = (float(i) / float(img_size)) * 2.5f - 1.25f;
+
+            // std::cout << "max_iters = " << max_iters << std::endl;
+
+            // if (i == 0 && j < 16) {
+            //     std::cout << "i = " << i << ", j = " << j << ", cx = " << cx << ", cy = " << cy << std::endl;
+            // }
 
             // Innermost loop: start the recursion from z = 0.
             float x2 = 0.0f;
@@ -30,18 +39,150 @@ void mandelbrot_cpu_scalar(uint32_t img_size, uint32_t max_iters, uint32_t *out)
                 float z = x + y;
                 w = z * z;
                 ++iters;
+
+                // if (i == 0 && j >= 0 && j < 16) {
+                //     // std::cout << "  i = " << i << ", j = " << j << "  iters = " << iters << ", x = " << x << ", y = " << y << ", x2 = " << x2 << ", y2 = " << y2 << ", w = " << w << std::endl;
+                //     std::cout << "x2 + y2 = " << (x2 + y2) << ", iters = " << iters << std::endl;
+                // } 
+                // if (i > 0) {
+                //     return;
+                // }
+
             }
 
             // Write result.
             out[i * img_size + j] = iters;
         }
     }
+
+    // int i = 0;
+    // for (int j = 0; j < 32; j++) {
+    //     std::cout << out[i * img_size + j] << " ";
+    // }
 }
 
 /// <--- your code here --->
 
+void print_helper_epi32(__m512i vec, std::string name) {
+    uint32_t arr[16];
+    _mm512_store_epi32(arr, vec);
+    std::cout << name << ": ";
+    for (int i = 0; i < 16; i++) {
+        std::cout << arr[i] << " ";
+    }
+    std::cout << std::endl;
+}
+
+void print_helper_ps(__m512 vec, std::string name) {
+    float arr[16];
+    _mm512_store_ps(arr, vec);
+    std::cout << name << ": ";
+    for (int i = 0; i < 16; i++) {
+        std::cout << arr[i] << " ";
+    }
+    std::cout << std::endl;
+}
+
 void mandelbrot_cpu_vector(uint32_t img_size, uint32_t max_iters, uint32_t *out) {
     // TODO: Implement this function.
+    uint32_t chunk_size = 16;
+    assert(img_size % chunk_size == 0);
+
+    uint32_t num_chunks = img_size / chunk_size;
+
+    // std::cout << "num_chunks: " << num_chunks << std::endl;
+
+    __m512 img_size_vec = _mm512_set1_ps(img_size);
+    __m512 two_point_five_vec = _mm512_set1_ps(2.5f);
+    __m512 two_vec = _mm512_set1_ps(2.0f);
+    __m512 one_point_two_five_vec = _mm512_set1_ps(1.25f);
+    __m512i max_iters_vec = _mm512_set1_epi32(max_iters);
+    for (uint64_t i = 0; i < img_size; i++) {
+	    for (uint64_t ch = 0; ch < num_chunks; ch++) {
+		    __m512 j_vec = _mm512_set_ps(ch + chunk_size - 1, ch + chunk_size - 2,
+				                 ch + chunk_size - 3, ch + chunk_size - 4,
+						 ch + chunk_size - 5, ch + chunk_size - 6,
+						 ch + chunk_size - 7, ch + chunk_size - 8,
+						 ch + chunk_size - 9, ch + chunk_size - 10,
+						 ch + chunk_size - 11, ch + chunk_size - 12,
+						 ch + chunk_size - 13, ch + chunk_size - 14,
+						 ch + chunk_size - 15, ch + chunk_size - 16);
+            // print_helper_ps(j_vec, "j_vec");
+		    __m512 i_vec = _mm512_set1_ps(i);
+		    __m512 cx_div = _mm512_div_ps(j_vec, img_size_vec);
+		    __m512 cx_mul = _mm512_mul_ps(cx_div, two_point_five_vec);
+		    __m512 cx = _mm512_sub_ps(cx_mul, two_vec);
+		    __m512 cy_div = _mm512_div_ps(i_vec, img_size_vec);
+		    __m512 cy_mul = _mm512_mul_ps(cy_div, two_point_five_vec);
+		    __m512 cy = _mm512_sub_ps(cy_mul, one_point_two_five_vec);
+
+            // print_helper_ps(cx, "cx");
+            // print_helper_ps(cy, "cy");
+
+		    __m512 x2 = _mm512_set1_ps(0);
+		    __m512 y2 = _mm512_set1_ps(0);
+		    __m512 w = _mm512_set1_ps(0);
+		    __m512i iters = _mm512_set1_epi32(0);
+            // uint32_t furthest_iter = 0;
+
+		    __m512 x2_y2_sum = _mm512_add_ps(x2, y2);
+		    __m512 four_vec = _mm512_set1_ps(4.0f);
+		    __mmask16 less_than_four = _mm512_cmp_ps_mask(x2_y2_sum, four_vec, 2);
+            __mmask16 less_than_max_iters = _mm512_cmp_epi32_mask(iters, max_iters_vec, 1);
+            __mmask16 active_mask = _kand_mask16(less_than_four, less_than_max_iters);
+
+            while (active_mask) {
+                __m512 _x = _mm512_sub_ps(x2, y2);
+                __m512 x = _mm512_add_ps(_x, cx);
+                __m512 __y = _mm512_sub_ps(w, x2);
+                __m512 _y = _mm512_sub_ps(__y, y2);
+                __m512 y = _mm512_add_ps(_y, cy);
+
+                x2 = _mm512_mul_ps(x, x);
+                y2 = _mm512_mul_ps(y, y);
+                __m512 z = _mm512_add_ps(x, y);
+                w = _mm512_mul_ps(z, z);
+
+                // if (ch == 1) {
+                //     std::cout << "ch = " << ch << std::endl;
+                //     print_helper_ps(x, "x");
+                //     print_helper_ps(y, "y");
+                //     print_helper_ps(x2, "x2");
+                //     print_helper_ps(y2, "y2");
+                //     print_helper_ps(w, "w");
+                //     return;
+                // }
+
+                // inc loop bounds
+                // if (ch == 0) {
+                //     print_helper_epi32(iters, "iters before increment");
+                // }
+                iters = _mm512_add_epi32(iters, _mm512_set1_epi32(1));
+                // if (ch == 0) {
+                //     print_helper_epi32(iters, "iters after increment");
+                // }
+
+                // repeat the loop bound checks here
+                __m512 x2_y2_sum = _mm512_add_ps(x2, y2);
+                __mmask16 less_than_four = _mm512_cmp_ps_mask(x2_y2_sum, four_vec, 2);
+                __mmask16 less_than_max_iters = _mm512_cmp_epi32_mask(iters, max_iters_vec, 1);
+                __mmask16 active_mask = _kand_mask16(less_than_four, less_than_max_iters);
+            }
+
+		    // store to out
+            // if ( i == 0 && ch == 0) {
+            //     std::cout << "Final iters for i = " << i << ", ch = " << ch << ": ";
+            //     print_helper_epi32(iters, "iters");
+            // }
+            _mm512_store_epi32(&(out[i * img_size + ch * chunk_size]), iters);
+		}
+	}
+
+    // int i = 0;
+    // for (int j = 0; j < 32; j++) {
+    //     std::cout << out[i * img_size + j] << " ";
+    // }
+
 }
 
 /// <--- /your code here --->
